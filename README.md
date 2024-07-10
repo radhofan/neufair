@@ -15,13 +15,13 @@ The simulated annealing and random walk repair strategies are implemented in `sa
 
 The `sa_experiments` and `random_experiments` contain scripts to run SA and RW strategies for the following datasets and sensitive attributes:
 <ol>
-    <li> `adult_race`: Adult Census Income dataset with Race </li>
-    <li> `adult`: Adult Census Income dataset with Sex </li>
-    <li> `bank`: Bank Marketing dataset with Age </li>
-    <li> `compas`: Compas Software with Race </li>
-    <li> `compas_sex`: Compas Software with Sex </li>
-    <li> `default`: Default Credit with Sex </li>
-    <li> `meps`: Medical Expenditure with Race </li>
+    <li> adult_race: Adult Census Income dataset with Race </li>
+    <li> adult: Adult Census Income dataset with Sex </li>
+    <li> bank: Bank Marketing dataset with Age </li>
+    <li> compas: Compas Software with Race </li>
+    <li> compas_sex: Compas Software with Sex </li>
+    <li> default: Default Credit with Sex </li>
+    <li> meps: Medical Expenditure with Race </li>
 </ol>
 
 To retrain your own models, please use the training scripts provided in `train_models`. Each training script trains models for a given dataset for 10 seeds. The training scripts contain the dataset-specific hyperparameters found after hyperparameter tuning.
