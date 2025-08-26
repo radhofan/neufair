@@ -27,7 +27,7 @@ python3 neufair/main.py
 source ~/openrc
 
 bucket_name="bare_metal_experiment_pattern_data"
-file_to_upload="neufair/AC-1-Neufair.h5"
+file_to_upload="neufair/model/AC-1-Neufair.h5"
 object_name="AC-1-Runner.h5"   
 
 echo
