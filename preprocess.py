@@ -12,8 +12,8 @@ def load_adult_ac1():
   # coding: utf-8
 
   # data = pd.read_csv("adult.csv")
-  train_path = './data_new/adult/adult.data'
-  test_path = './data_new/adult/adult.test'
+  train_path = './neufair/data_new/adult/adult.data'
+  test_path = './neufair/data_new/adult/adult.test'
 
   column_names = ['age', 'workclass', 'fnlwgt', 'education',
               'education-num', 'marital-status', 'occupation', 'relationship',

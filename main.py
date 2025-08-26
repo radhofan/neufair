@@ -494,13 +494,13 @@ if __name__ == "__main__":
     df, X_train, y_train, X_test, y_test, encoders = load_adult_ac1()
     
     fairer_model_path, config_path = repair_model_fairness(
-        original_model_path='./model/AC-1.h5',
+        original_model_path='./neufair/model/AC-1.h5',
         X_train=X_train,
         y_train=y_train,
         X_test=X_test,
         y_test=y_test,
         constraint=constraint,
-        output_model_path='./model/AC-1-Neufair.h5',
+        output_model_path='./neufair/model/AC-1-Neufair.h5',
         protected_attribs=[8],  
         max_iter=25,
         fairness_weight=0.6
