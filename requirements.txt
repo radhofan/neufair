@@ -175,7 +175,7 @@ toolz==0.12.1
 torch==2.0.0
 torchaudio==2.0.0
 torchmetrics==1.8.1
-torchvision==0.15.2a0
+torchvision==0.15.2
 tornado==6.5.1
 tqdm==4.67.1
 traitlets==5.14.3
