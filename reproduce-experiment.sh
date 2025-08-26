@@ -19,10 +19,10 @@ mamba create -n neufair python=3.9 -y
 source $HOME/miniconda/bin/activate neufair
 mamba activate neufair
 
-pip install -r neufair/requirements.txt
+python3 -m pip install -r neufair/requirements.txt
 sudo apt install -y python3-swiftclient
 
-python neufair/main.py
+python3 neufair/main.py
 
 source ~/openrc
 
