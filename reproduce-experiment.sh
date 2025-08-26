@@ -22,7 +22,7 @@ mamba activate neufair
 pip install -r neufair/requirements.txt
 sudo apt install -y python3-swiftclient
 
-python main.py
+python neufair/main.py
 
 source ~/openrc
 
