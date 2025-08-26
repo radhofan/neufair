@@ -172,7 +172,7 @@ tinycss2==1.4.0
 tomli==2.2.1
 tomlkit==0.13.3
 toolz==0.12.1
-torch==2.0.0.post200
+torch==2.0.0
 torchaudio==2.0.0
 torchmetrics==1.8.1
 torchvision==0.15.2a0
