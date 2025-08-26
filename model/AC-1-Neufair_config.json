@@ -1,0 +1,43 @@
+{
+  "model_architecture": {
+    "layer_names": [
+      "dense_5",
+      "dense_6"
+    ],
+    "layer_shapes": [
+      16,
+      8
+    ],
+    "total_layers": 2
+  },
+  "neuron_states": {
+    "dense_5": [
+      1,
+      1,
+      1,
+      0,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "dense_6": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      0,
+      1,
+      1
+    ]
+  }
+}
