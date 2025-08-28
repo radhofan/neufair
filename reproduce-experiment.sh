@@ -28,7 +28,7 @@ source ~/openrc
 
 bucket_name="bare_metal_experiment_pattern_data"
 file_to_upload="neufair/model/AC-1-Neufair.h5"
-object_name="AC-1-Runner.h5"   
+object_name="AC-1-Neufair.h5"   
 
 echo
 echo "Uploading results to the object store container $bucket_name"

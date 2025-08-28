@@ -5,6 +5,7 @@ import json
 import os
 import random
 import math
+import gc
 from sklearn.metrics import f1_score, accuracy_score
 from typing import Dict, List, Tuple, Optional
 import logging
@@ -53,13 +54,13 @@ class NeuFairConfig:
             return np.array(self.neuron_states[layer_name])
         return None
 
-class FastSimulatedAnnealingRepair:
-    """OPTIMIZED TensorFlow/Keras implementation of NeuFair"""
+class BalancedFastSimulatedAnnealingRepair:
+    """FIXED and BALANCED TensorFlow/Keras implementation of NeuFair"""
     
     def __init__(self, model_path: str, X_train: np.ndarray, y_train: np.ndarray, 
                  X_test: np.ndarray, y_test: np.ndarray, constraint: np.ndarray,
-                 protected_attribs: List[int] = None, max_iter: int = 1000,
-                 temp_schedule: str = 'linear', fairness_weight: float = 0.5):
+                 protected_attribs: List[int] = None, max_iter: int = 500,
+                 temp_schedule: str = 'balanced', fairness_weight: float = 0.5):
         
         self.model_path = model_path
         self.original_model = tf.keras.models.load_model(model_path)
@@ -69,7 +70,7 @@ class FastSimulatedAnnealingRepair:
         self.y_test = y_test.astype(np.float32)
         self.constraint = constraint
         self.protected_attribs = protected_attribs if protected_attribs else [8]
-        self.max_iter = max_iter
+        self.max_iter = max(max_iter, 200)  # Enforce minimum iterations
         self.temp_schedule = temp_schedule
         self.fairness_weight = fairness_weight
         
@@ -77,19 +78,22 @@ class FastSimulatedAnnealingRepair:
         self.dense_layers = self._get_dense_layers()
         self.layer_shapes = self._get_layer_shapes()
         
-        # OPTIMIZATION: Pre-generate fairness test samples
-        self.fairness_samples = self._pregenerate_fairness_samples(n_samples=100)  # Reduced from 500
+        # BALANCED: Reasonable number of fairness test samples
+        self.fairness_samples = self._pregenerate_fairness_samples(n_samples=200)
         
         # Initialize state
         self.current_state = self._initialize_state()
         self.best_state = self.current_state.copy()
         self.best_cost = float('inf')
         
-        # OPTIMIZATION: Cache for model evaluations
+        # BALANCED: Smaller cache to prevent memory issues
         self.evaluation_cache = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
         
-        logger.info(f"Initialized FAST SA repair with {len(self.dense_layers)} dense layers")
+        logger.info(f"Initialized BALANCED SA repair with {len(self.dense_layers)} dense layers")
         logger.info(f"Pre-generated {len(self.fairness_samples)} fairness test samples")
+        logger.info(f"Minimum iterations enforced: {self.max_iter}")
     
     def _get_dense_layers(self) -> List[tf.keras.layers.Dense]:
         """Extract all dense layers from the model"""
@@ -111,7 +115,7 @@ class FastSimulatedAnnealingRepair:
             state[layer.name] = [1] * layer.units
         return state
     
-    def _pregenerate_fairness_samples(self, n_samples: int = 100) -> List[Tuple[np.ndarray, np.ndarray]]:
+    def _pregenerate_fairness_samples(self, n_samples: int = 200) -> List[Tuple[np.ndarray, np.ndarray]]:
         """Pre-generate samples for fairness evaluation"""
         samples = []
         for _ in range(n_samples):
@@ -131,18 +135,13 @@ class FastSimulatedAnnealingRepair:
         """Convert state to hashable key for caching"""
         return json.dumps({k: v for k, v in sorted(state.items())})
     
-    def _create_masked_model_fast(self, state: Dict[str, List[int]]) -> tf.keras.Model:
-        """OPTIMIZED: Create masked model with minimal operations"""
-        # Check cache first
-        state_key = self._state_to_key(state)
-        if state_key in self.evaluation_cache:
-            return self.evaluation_cache[state_key]['model']
-        
+    def _create_masked_model_balanced(self, state: Dict[str, List[int]]) -> tf.keras.Model:
+        """BALANCED: Create masked model with efficient operations and memory management"""
         try:
             masked_model = tf.keras.models.clone_model(self.original_model)
             masked_model.set_weights(self.original_model.get_weights())
             
-            # Apply masking more efficiently
+            # Apply masking efficiently
             self._apply_neuron_masks_vectorized(masked_model, state)
             
             return masked_model
@@ -179,56 +178,67 @@ class FastSimulatedAnnealingRepair:
                                     next_layer.set_weights(next_weights)
                                 break
     
-    def compute_fairness_fast(self, state: Dict[str, List[int]]) -> Tuple[float, float, float]:
-        """OPTIMIZED: Batch process fairness computation"""
+    def compute_fairness_balanced(self, state: Dict[str, List[int]]) -> Tuple[float, float, float]:
+        """BALANCED: Compute fairness with controlled caching"""
         state_key = self._state_to_key(state)
         
-        # Check cache
+        # Check cache with size control
         if state_key in self.evaluation_cache:
             cached = self.evaluation_cache[state_key]
+            self.cache_hits += 1
             return cached['accuracy'], cached['f1'], cached['fairness']
         
+        self.cache_misses += 1
+        
         try:
-            masked_model = self._create_masked_model_fast(state)
+            masked_model = self._create_masked_model_balanced(state)
             
-            # OPTIMIZATION: Batch predict on test set
-            y_pred_proba = masked_model.predict(self.X_test, verbose=0, batch_size=512)
+            # Batch predict on test set
+            y_pred_proba = masked_model.predict(self.X_test, verbose=0, batch_size=256)
             y_pred = (y_pred_proba > 0.5).astype(int).flatten()
             y_true = self.y_test.flatten()
             
             accuracy = accuracy_score(y_true, y_pred)
             f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
             
-            # OPTIMIZATION: Batch fairness computation
+            # Batch fairness computation
             fairness_score = self._compute_batch_discrimination(masked_model)
             
-            # Cache results
-            self.evaluation_cache[state_key] = {
-                'model': masked_model,
-                'accuracy': accuracy,
-                'f1': f1,
-                'fairness': fairness_score
-            }
+            # Clean up model immediately
+            del masked_model
+            tf.keras.backend.clear_session()
+            gc.collect()
             
-            # Limit cache size
-            if len(self.evaluation_cache) > 50:
+            # Cache results with strict size control
+            if len(self.evaluation_cache) < 30:  # Reduced cache size
+                self.evaluation_cache[state_key] = {
+                    'accuracy': accuracy,
+                    'f1': f1,
+                    'fairness': fairness_score
+                }
+            elif len(self.evaluation_cache) >= 30:
+                # Remove oldest entry
                 oldest_key = next(iter(self.evaluation_cache))
-                del self.evaluation_cache[oldest_key]['model']
                 del self.evaluation_cache[oldest_key]
+                self.evaluation_cache[state_key] = {
+                    'accuracy': accuracy,
+                    'f1': f1,
+                    'fairness': fairness_score
+                }
             
             return accuracy, f1, fairness_score
             
         except Exception as e:
-            logger.warning(f"Error in compute_fairness_fast: {e}")
+            logger.warning(f"Error in compute_fairness_balanced: {e}")
             return 0.0, 0.0, 1.0
     
     def _compute_batch_discrimination(self, model) -> float:
-        """OPTIMIZED: Batch process discrimination detection"""
+        """BALANCED: Batch process discrimination detection"""
         total_discriminatory = 0
         total_samples = 0
         
-        # Process in batches for efficiency
-        batch_size = 25  # Reduced from processing 500 samples
+        # Process in reasonable batches
+        batch_size = 40
         
         for i in range(0, len(self.fairness_samples), batch_size):
             batch_samples = self.fairness_samples[i:i+batch_size]
@@ -256,7 +266,6 @@ class FastSimulatedAnnealingRepair:
         """Generate similar instances by varying protected attributes"""
         similar_instances = []
         
-        # OPTIMIZATION: Limit combinations for speed
         for attr_idx in self.protected_attribs:
             min_val, max_val = self.constraint[attr_idx]
             for value in range(min_val, max_val + 1):
@@ -273,66 +282,73 @@ class FastSimulatedAnnealingRepair:
         cost = self.fairness_weight * fairness_score + (1 - self.fairness_weight) * (1 - performance_score)
         return cost
     
-    def _generate_neighbor_state_smart(self, current_state: Dict[str, List[int]]) -> Dict[str, List[int]]:
-        """OPTIMIZED: Smart neighbor generation with multiple flips"""
+    def _generate_neighbor_state_balanced(self, current_state: Dict[str, List[int]]) -> Dict[str, List[int]]:
+        """FIXED: Balanced neighbor generation that actually explores neuron dropping"""
         new_state = {k: v.copy() for k, v in current_state.items()}
         
-        # OPTIMIZATION: Flip 2-3 neurons at once for bigger moves
-        num_flips = random.choice([1, 2, 3])
+        # BALANCED: Usually flip 1 neuron, occasionally 2
+        num_flips = 1 if random.random() < 0.7 else 2
         
         for _ in range(num_flips):
             layer_names = list(new_state.keys())
             selected_layer = random.choice(layer_names)
             selected_neuron = random.randint(0, len(new_state[selected_layer]) - 1)
             
-            # Flip with bias towards keeping neurons active
-            if new_state[selected_layer][selected_neuron] == 1:
-                if random.random() < 0.2:  # Reduced drop probability
+            # FIXED: More balanced probabilities that actually explore dropping
+            current_value = new_state[selected_layer][selected_neuron]
+            
+            if current_value == 1:  # Currently active
+                # Drop neuron with reasonable probability
+                if random.random() < 0.4:  # 40% chance to drop
                     new_state[selected_layer][selected_neuron] = 0
-            else:
-                if random.random() < 0.8:  # High reactivation probability
+            else:  # Currently dropped
+                # Reactivate with moderate probability
+                if random.random() < 0.6:  # 60% chance to reactivate
                     new_state[selected_layer][selected_neuron] = 1
         
         return new_state
     
-    def _calculate_temperature(self, iteration: int) -> float:
-        """Calculate temperature for simulated annealing"""
-        initial_temp = 2.0  # Higher initial temp for faster exploration
-        final_temp = 0.01
+    def _calculate_temperature_balanced(self, iteration: int) -> float:
+        """BALANCED: Temperature schedule that allows proper exploration"""
+        initial_temp = 1.5
+        final_temp = 0.05
         
-        if self.temp_schedule == 'fast_linear':
-            # Faster cooling schedule
-            return initial_temp - (initial_temp - final_temp) * ((iteration / self.max_iter) ** 0.5)
+        if self.temp_schedule == 'balanced':
+            # Balanced cooling - not too fast, not too slow
+            progress = iteration / self.max_iter
+            return initial_temp * (final_temp / initial_temp) ** (progress ** 0.8)
+        elif self.temp_schedule == 'linear':
+            return initial_temp - (initial_temp - final_temp) * (iteration / self.max_iter)
         elif self.temp_schedule == 'exponential':
             return initial_temp * (final_temp / initial_temp) ** (iteration / self.max_iter)
         else:
-            return initial_temp * (0.98 ** iteration)  # Faster decay
+            return initial_temp * (0.97 ** iteration)  # Moderate decay
     
-    def run_sa_fast(self) -> NeuFairConfig:
-        """OPTIMIZED: Run fast simulated annealing optimization"""
-        logger.info("Starting FAST simulated annealing optimization...")
+    def run_sa_balanced(self) -> NeuFairConfig:
+        """BALANCED: Run properly tuned simulated annealing optimization"""
+        logger.info("Starting BALANCED simulated annealing optimization...")
         
         # Evaluate initial state
-        accuracy, f1, fairness = self.compute_fairness_fast(self.current_state)
+        accuracy, f1, fairness = self.compute_fairness_balanced(self.current_state)
         self.best_cost = self._cost_function(accuracy, f1, fairness)
         current_cost = self.best_cost
         
         logger.info(f"Initial: Accuracy={accuracy:.4f}, F1={f1:.4f}, Fairness={fairness:.4f}, Cost={self.best_cost:.4f}")
         
-        # OPTIMIZATION: Track recent improvements for early stopping
+        # Track improvements with BALANCED early stopping
         no_improvement_count = 0
-        last_best_cost = self.best_cost
+        significant_improvements = 0
         
         for iteration in range(self.max_iter):
-            # Generate neighbor state with smart heuristics
-            neighbor_state = self._generate_neighbor_state_smart(self.current_state)
+            # Generate balanced neighbor state
+            neighbor_state = self._generate_neighbor_state_balanced(self.current_state)
             
             # Evaluate neighbor
-            neighbor_accuracy, neighbor_f1, neighbor_fairness = self.compute_fairness_fast(neighbor_state)
+            neighbor_accuracy, neighbor_f1, neighbor_fairness = self.compute_fairness_balanced(neighbor_state)
             neighbor_cost = self._cost_function(neighbor_accuracy, neighbor_f1, neighbor_fairness)
             
             # Calculate acceptance probability
-            temperature = self._calculate_temperature(iteration)
+            temperature = self._calculate_temperature_balanced(iteration)
             delta_cost = neighbor_cost - current_cost
             
             if delta_cost < 0 or (temperature > 0 and random.random() < math.exp(-delta_cost / temperature)):
@@ -340,10 +356,12 @@ class FastSimulatedAnnealingRepair:
                 current_cost = neighbor_cost
                 
                 if neighbor_cost < self.best_cost:
-                    self.best_state = {k: v.copy() for k, v in neighbor_state.items()}
                     improvement = self.best_cost - neighbor_cost
+                    self.best_state = {k: v.copy() for k, v in neighbor_state.items()}
                     self.best_cost = neighbor_cost
                     no_improvement_count = 0
+                    significant_improvements += 1
+                    
                     logger.info(f"NEW BEST at iteration {iteration}: "
                               f"Accuracy={neighbor_accuracy:.4f}, F1={neighbor_f1:.4f}, "
                               f"Fairness={neighbor_fairness:.4f}, Cost={self.best_cost:.4f} "
@@ -353,16 +371,36 @@ class FastSimulatedAnnealingRepair:
             else:
                 no_improvement_count += 1
             
-            # OPTIMIZATION: Early stopping if no improvement
-            if no_improvement_count > 50 and iteration > self.max_iter * 0.3:
-                logger.info(f"Early stopping at iteration {iteration} (no improvement for 50 iterations)")
+            # BALANCED: Early stopping only after sufficient exploration
+            min_exploration_iterations = max(200, self.max_iter * 0.6)
+            if (no_improvement_count > 150 and 
+                iteration > min_exploration_iterations and 
+                significant_improvements > 0):  # Only stop if we found some improvements
+                logger.info(f"Early stopping at iteration {iteration} after sufficient exploration")
+                logger.info(f"Total significant improvements: {significant_improvements}")
                 break
             
-            # Log progress less frequently
+            # Log progress
             if (iteration + 1) % 50 == 0:
+                # Count dropped neurons in current best state
+                total_neurons = sum(len(neurons) for neurons in self.best_state.values())
+                dropped_neurons = sum(neurons.count(0) for neurons in self.best_state.values())
+                drop_percentage = (dropped_neurons / total_neurons) * 100 if total_neurons > 0 else 0
+                
                 logger.info(f"Iteration {iteration + 1}/{self.max_iter}: "
                           f"Temp={temperature:.4f}, Current Cost={current_cost:.4f}, "
-                          f"Best Cost={self.best_cost:.4f}, Cache size={len(self.evaluation_cache)}")
+                          f"Best Cost={self.best_cost:.4f}, "
+                          f"Neurons dropped: {dropped_neurons}/{total_neurons} ({drop_percentage:.1f}%), "
+                          f"Cache: {len(self.evaluation_cache)} (hits/misses: {self.cache_hits}/{self.cache_misses})")
+        
+        # Final statistics
+        total_neurons = sum(len(neurons) for neurons in self.best_state.values())
+        dropped_neurons = sum(neurons.count(0) for neurons in self.best_state.values())
+        drop_percentage = (dropped_neurons / total_neurons) * 100 if total_neurons > 0 else 0
+        
+        logger.info(f"FINAL RESULT: {dropped_neurons}/{total_neurons} neurons dropped ({drop_percentage:.1f}%)")
+        logger.info(f"Total significant improvements: {significant_improvements}")
+        logger.info(f"Cache efficiency: {self.cache_hits}/{self.cache_hits + self.cache_misses} hits")
         
         # Create configuration
         model_architecture = {
@@ -376,71 +414,9 @@ class FastSimulatedAnnealingRepair:
             neuron_states=self.best_state
         )
         
-        logger.info("FAST simulated annealing completed!")
+        logger.info("BALANCED simulated annealing completed!")
         return config
 
-def repair_model_fairness_fast(original_model_path: str, X_train: np.ndarray, y_train: np.ndarray,
-                              X_test: np.ndarray, y_test: np.ndarray, constraint: np.ndarray,
-                              output_model_path: str, config_save_path: str = None,
-                              protected_attribs: List[int] = None, max_iter: int = 100,  # Reduced default
-                              temp_schedule: str = 'fast_linear', fairness_weight: float = 0.5) -> Tuple[str, str]:
-    """
-    FAST Complete fairness repair pipeline
-    
-    OPTIMIZATIONS APPLIED:
-    - Reduced default iterations from 1000 to 100
-    - Batch processing for predictions
-    - Caching of model evaluations
-    - Reduced fairness samples from 500 to 100
-    - Smart neighbor generation (multiple neuron flips)
-    - Early stopping when no improvement
-    - Fast temperature schedule
-    """
-    set_all_seeds(42)
-    
-    logger.info("=== STARTING FAST NEUFAIR REPAIR ===")
-    
-    # Initialize repair system with fast implementation
-    repair_system = FastSimulatedAnnealingRepair(
-        model_path=original_model_path,
-        X_train=X_train,
-        y_train=y_train,
-        X_test=X_test,
-        y_test=y_test,
-        constraint=constraint,
-        protected_attribs=protected_attribs,
-        max_iter=max_iter,
-        temp_schedule=temp_schedule,
-        fairness_weight=fairness_weight
-    )
-    
-    # Run optimization
-    config = repair_system.run_sa_fast()
-    
-    # Save configuration
-    if config_save_path is None:
-        config_save_path = output_model_path.replace('.h5', '_config.json')
-    config.save(config_save_path)
-    
-    # Create fairer model (reuse from original code)
-    create_fairer_model(original_model_path, config_save_path, output_model_path)
-    
-    return output_model_path, config_save_path
-
-# ULTRA FAST version for quick testing
-def repair_model_fairness_ultra_fast(original_model_path: str, X_train: np.ndarray, y_train: np.ndarray,
-                                    X_test: np.ndarray, y_test: np.ndarray, constraint: np.ndarray,
-                                    output_model_path: str, **kwargs) -> Tuple[str, str]:
-    """ULTRA FAST version - 5-10 minutes instead of hours"""
-    return repair_model_fairness_fast(
-        original_model_path=original_model_path,
-        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
-        constraint=constraint, output_model_path=output_model_path,
-        max_iter=50,  # Very low iterations
-        **kwargs
-    )
-
-# Include original functions for compatibility
 def create_fairer_model(original_model_path: str, config_path: str, output_path: str) -> str:
     """Create a fairer model by permanently applying neuron dropping configuration"""
     logger.info("Creating fairer model from configuration...")
@@ -498,7 +474,54 @@ def create_fairer_model(original_model_path: str, config_path: str, output_path:
     
     return output_path
 
-# Example usage optimized for speed
+def repair_model_fairness_balanced(original_model_path: str, X_train: np.ndarray, y_train: np.ndarray,
+                                  X_test: np.ndarray, y_test: np.ndarray, constraint: np.ndarray,
+                                  output_model_path: str, config_save_path: str = None,
+                                  protected_attribs: List[int] = None, max_iter: int = 300,
+                                  temp_schedule: str = 'balanced', fairness_weight: float = 0.5) -> Tuple[str, str]:
+    """
+    BALANCED Complete fairness repair pipeline
+    
+    FIXES APPLIED:
+    - Balanced neighbor generation (40% drop chance, 60% reactivation chance)
+    - Minimum 200 iterations enforced
+    - Proper exploration before early stopping (60% of max_iter minimum)
+    - Better temperature schedule
+    - Controlled memory usage with smaller cache
+    - Detailed logging of neuron dropping progress
+    """
+    set_all_seeds(42)
+    
+    logger.info("=== STARTING BALANCED NEUFAIR REPAIR ===")
+    
+    # Initialize repair system with balanced implementation
+    repair_system = BalancedFastSimulatedAnnealingRepair(
+        model_path=original_model_path,
+        X_train=X_train,
+        y_train=y_train,
+        X_test=X_test,
+        y_test=y_test,
+        constraint=constraint,
+        protected_attribs=protected_attribs,
+        max_iter=max_iter,
+        temp_schedule=temp_schedule,
+        fairness_weight=fairness_weight
+    )
+    
+    # Run optimization
+    config = repair_system.run_sa_balanced()
+    
+    # Save configuration
+    if config_save_path is None:
+        config_save_path = output_model_path.replace('.h5', '_config.json')
+    config.save(config_save_path)
+    
+    # Create fairer model
+    create_fairer_model(original_model_path, config_save_path, output_model_path)
+    
+    return output_model_path, config_save_path
+
+# Example usage with balanced parameters
 if __name__ == "__main__":
     from preprocess import load_adult_ac1
     
@@ -509,14 +532,14 @@ if __name__ == "__main__":
     
     df, X_train, y_train, X_test, y_test, encoders = load_adult_ac1()
     
-    print("=== RUNNING ULTRA FAST VERSION (5-10 minutes) ===")
-    fairer_model_path, config_path = repair_model_fairness_ultra_fast(
-        original_model_path='./neufair/model/AC-1.h5',
+    print("=== RUNNING BALANCED VERSION ===")
+    fairer_model_path, config_path = repair_model_fairness_balanced(
+        original_model_path='./neufair/model/AC-5.h5',
         X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
-        constraint=constraint, output_model_path='./neufair/model/AC-1-Neufair-Fast.h5',
-        protected_attribs=[8], fairness_weight=0.6
+        constraint=constraint, output_model_path='./neufair/model/AC-5-Neufair.h5',
+        protected_attribs=[8], max_iter=300, fairness_weight=0.6
     )
     
-    print("=== FAST NEUFAIR COMPLETED ===")
+    print("=== BALANCED NEUFAIR COMPLETED ===")
     print(f"Fairer model: {fairer_model_path}")
     print(f"Config: {config_path}")
